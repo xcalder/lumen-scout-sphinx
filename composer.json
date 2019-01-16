@@ -1,0 +1,32 @@
+{
+    "name": "xcalder/lumen-scout-sphinx",
+    "type": "library",
+    "keywords": [
+        "lumen",
+        "scout",
+        "sphinx",
+        "laravel"
+    ],
+    "license": "MIT",
+    "description": "Shpinx package for lumen scout",
+    "authors": [
+        {
+            "name": "xcalder",
+            "email": "xcalder@foxmail.com",
+            "homepage": "https://openant.com",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": ">=5.3"
+    },
+    "suggest": {
+        "ext-event": "For better performance. "
+    },
+    "autoload": {
+        "psr-4": {
+            "Sphinx\\": "./"
+        }
+    },
+    "minimum-stability": "dev"
+}
