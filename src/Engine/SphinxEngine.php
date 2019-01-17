@@ -10,12 +10,16 @@ use Sphinx\Lib\SphinxClient;
 class SphinxEngine extends Engine
 {
     
-    protected $sphinx_client;
+    private $sphinx_client;
     
-    
-    public function __construct()
+    public function __construct($config)
     {
+        $host = $config['host'];
+        $port = $config['port'];
         $this->sphinx_client = new SphinxClient();
+        $this->sphinx_client->SphinxClient();
+        $this->sphinx_client = $this->sphinx_client->SetServer($host, $port);
+        var_dump($this->sphinx_client->Status());
     }
     
     public function update($models)
