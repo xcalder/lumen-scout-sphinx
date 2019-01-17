@@ -11,6 +11,10 @@ class SphinxEngine extends Engine
 {
     
     private $sphinx_client;
+    private $attrs;
+    private $values;
+    private $config;
+    private $index_config;
     
     public function __construct($config)
     {
@@ -18,8 +22,10 @@ class SphinxEngine extends Engine
         $port = $config['port'];
         $this->sphinx_client = new SphinxClient();
         $this->sphinx_client->SphinxClient();
-        $this->sphinx_client = $this->sphinx_client->SetServer($host, $port);
-        var_dump($this->sphinx_client->Status());
+        $this->sphinx_client->SetServer($host, $port);
+        $this->attrs = [];
+        $this->values = [];
+        $this->config = $config;
     }
     
     public function update($models)
@@ -29,28 +35,55 @@ class SphinxEngine extends Engine
         }
         
         $index = $models->first()->searchableAs();
-        $attrs = [];
-        $values = [];
         
         if ($this->usesSoftDelete($models->first()) && config('scout.soft_delete', false)) {
             $models->each->pushSoftDeleteMetadata();
         }
         
-        $objects = $models->map(function ($model) {
+        $values = $models->map(function ($model) {
             $array = array_merge(
                 $model->toSearchableArray(), $model->scoutMetadata()
-                );
+            );
+            
+            $index = $model->first()->searchableAs();
+            $array = $this->getattrsFields($index, $array);
             
             if (empty($array)) {
                 return;
             }
             
-            return array_merge(['objectID' => $model->getScoutKey()], $array);
-        })->filter()->values()->all();
+            $key = $model->getScoutKey();
+            $this->attrs = array_keys($array);
+            $this->values[$key] = array_values($array);
+            return;
+        });
         
-        if (! empty($objects)) {
-            $this->sphinx_client->UpdateAttributes($index, $attrs, $values);
+        if (! empty($this->values)) {
+            $this->sphinx_client->UpdateAttributes($index, $this->attrs, $this->values);
         }
+    }
+    
+    private function getattrsFields($index, $array){
+        if(empty($index) || empty($array)){
+            return;
+        }
+        $this->index_config = $index_config = $this->config['index'][$index];
+        if(!isset($this->index_config) || empty($this->index_config)){
+            return;
+        }
+        $return = [];
+        foreach ($array as $key=>$value){
+            if(in_array($key, $this->index_config)){
+                if(!empty($value) && ($key == 'deleted_at' || $key == 'updated_at' || $key == 'created_at')){
+                    $value = strtotime($value);
+                }
+                if(empty($value) && ($key == 'deleted_at' || $key == 'updated_at' || $key == 'created_at')){
+                    $value = 0;
+                }
+                $return[$key] = $value;
+            }
+        }
+        return $return;
     }
     
     /**
@@ -61,13 +94,17 @@ class SphinxEngine extends Engine
      */
     public function delete($models)
     {
-        $index = $this->algolia->initIndex($models->first()->searchableAs());
+        $index = $models->first()->searchableAs();
+        $this->values = [];
+        $values = $models->map(function ($model) {
+            $key = $model->getScoutKey();
+            $this->values[$key] = [time()];
+            return;
+        });
         
-        $index->deleteObjects(
-            $models->map(function ($model) {
-                return $model->getScoutKey();
-            })->values()->all()
-            );
+        if(!empty($values)){
+            $this->sphinx_client->UpdateAttributes($index, ['deleted_at'], $this->values);
+        }
     }
     
     /**
@@ -79,8 +116,8 @@ class SphinxEngine extends Engine
     public function search(Builder $builder)
     {
         return $this->performSearch($builder, array_filter([
-            'numericFilters' => $this->filters($builder),
             'hitsPerPage' => $builder->limit,
+            'page' => 0,
         ]));
     }
     
@@ -95,7 +132,6 @@ class SphinxEngine extends Engine
     public function paginate(Builder $builder, $perPage, $page)
     {
         return $this->performSearch($builder, [
-            'numericFilters' => $this->filters($builder),
             'hitsPerPage' => $perPage,
             'page' => $page - 1,
         ]);
@@ -110,20 +146,23 @@ class SphinxEngine extends Engine
      */
     protected function performSearch(Builder $builder, array $options = [])
     {
-        $algolia = $this->algolia->initIndex(
-            $builder->index ?: $builder->model->searchableAs()
-            );
+        $index = $builder->model->searchableAs();
         
         if ($builder->callback) {
             return call_user_func(
                 $builder->callback,
-                $algolia,
+                $index,
                 $builder->query,
                 $options
                 );
         }
+        $this->Filters($builder);
         
-        return $algolia->search($builder->query, $options);
+        $offset = intval($options['page'] * $options['hitsPerPage']);
+        $limit = intval($options['hitsPerPage']);
+        $this->sphinx_client->SetLimits($offset, $limit);
+        
+        return $this->sphinx_client->Query($builder->query, $index);
     }
     
     /**
@@ -134,9 +173,12 @@ class SphinxEngine extends Engine
      */
     protected function filters(Builder $builder)
     {
-        return collect($builder->wheres)->map(function ($value, $key) {
-            return $key.'='.$value;
-        })->values()->all();
+        $this->sphinx_client->SetFilter('deleted_at', [0]);
+        if($builder->wheres){
+            foreach ($builder->wheres as $key=>$value){
+                $this->sphinx_client->SetFilter($key, [$value]);
+            }
+        }
     }
     
     /**
@@ -147,7 +189,7 @@ class SphinxEngine extends Engine
      */
     public function mapIds($results)
     {
-        return collect($results['hits'])->pluck('objectID')->values();
+        return collect($results['matches'])->pluck('attrs')->pluck('new_id')->values();
     }
     
     /**
@@ -160,16 +202,16 @@ class SphinxEngine extends Engine
      */
     public function map(Builder $builder, $results, $model)
     {
-        if (count($results['hits']) === 0) {
+        if (intval($results['total']) === 0) {
             return $model->newCollection();
         }
         
-        $objectIds = collect($results['hits'])->pluck('objectID')->values()->all();
+        $ids = collect($results['matches'])->pluck('attrs')->pluck('new_id')->values()->all();
         
         return $model->getScoutModelsByIds(
-            $builder, $objectIds
-            )->filter(function ($model) use ($objectIds) {
-                return in_array($model->getScoutKey(), $objectIds);
+            $builder, $ids
+            )->filter(function ($model) use ($ids) {
+                return in_array($model->getScoutKey(), $ids);
             });
     }
     
@@ -181,7 +223,7 @@ class SphinxEngine extends Engine
      */
     public function getTotalCount($results)
     {
-        return $results['nbHits'];
+        return $results['total'];
     }
     
     /**
@@ -192,9 +234,15 @@ class SphinxEngine extends Engine
      */
     public function flush($model)
     {
-        $index = $this->algolia->initIndex($model->searchableAs());
-        
-        $index->clearIndex();
+        $index = $model->searchableAs();
+        $model->chunk(500, function ($flights) {
+            $values = [];
+            foreach ($flights as $flight) {
+                $values[$flight->id] = time();
+            }
+            $attrs = ['deleted_at'];
+            $this->sphinx_client->UpdateAttributes($index, $attrs, $values);
+        });
     }
     
     /**
