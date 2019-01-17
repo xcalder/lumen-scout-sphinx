@@ -25,10 +25,11 @@
     },
     "autoload": {
         "psr-4": {
-            "Sphinx\\": "src/"
+            "Sphinx\\": "./"
         },
         "files": [
             "src/Lib/helps.php"
         ]
-    }
+    },
+    "minimum-stability": "dev"
 }

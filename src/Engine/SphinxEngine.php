@@ -15,6 +15,7 @@ class SphinxEngine extends Engine
     private $values;
     private $config;
     private $index_config;
+    private $index;
     
     public function __construct($config)
     {
@@ -234,14 +235,14 @@ class SphinxEngine extends Engine
      */
     public function flush($model)
     {
-        $index = $model->searchableAs();
+        $this->index = $model->searchableAs();
         $model->chunk(500, function ($flights) {
             $values = [];
             foreach ($flights as $flight) {
-                $values[$flight->id] = time();
+                $values[$flight->id] = [time()];
             }
             $attrs = ['deleted_at'];
-            $this->sphinx_client->UpdateAttributes($index, $attrs, $values);
+            $this->sphinx_client->UpdateAttributes($this->index, $attrs, $values);
         });
     }
     
